@@ -1,0 +1,31 @@
+# --- Secrets: printer IP, serial number, LAN access code ---
+.env
+.env.*
+!.env.example
+
+# --- Python ---
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# --- Logs / debug dumps (verbose mode prints raw MQTT payloads incl. serial) ---
+*.log
+*.dump
+frame.jpg
+
+# --- Local tooling / editors ---
+.claude/
+.vscode/
+.idea/
+
+# --- OS ---
+Thumbs.db
+Desktop.ini
+.DS_Store

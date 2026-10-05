@@ -1,0 +1,222 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Bambu Overlay</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --scale: 1;
+    --bg: rgba(14, 16, 20, 0.80);
+    --border: rgba(255, 255, 255, 0.08);
+    --text: #f2f4f7;
+    --muted: #9aa3ae;
+    --track: rgba(255, 255, 255, 0.10);
+    --accent: #4ade80;
+    --fill: var(--accent);
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { background: transparent; overflow: hidden; }
+  body {
+    font-family: Inter, "Segoe UI", system-ui, sans-serif;
+    color: var(--text);
+    font-variant-numeric: tabular-nums;
+    -webkit-font-smoothing: antialiased;
+  }
+  .card {
+    width: 460px;
+    margin: 12px;
+    padding: 16px 20px 18px;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    box-shadow: 0 8px 30px rgba(0, 0, 0, 0.35);
+    transform: scale(var(--scale));
+    transform-origin: top left;
+    transition: opacity 0.6s ease;
+  }
+  .card.hidden { opacity: 0; }
+  .card.offline { opacity: 0.55; }
+
+  .head { display: flex; align-items: center; gap: 10px; min-width: 0; }
+  .pill {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 3px 10px 3px 8px;
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.07);
+    font-size: 12px; font-weight: 600; letter-spacing: 0.02em;
+    white-space: nowrap;
+  }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--dot, var(--muted)); }
+  .pill.live .dot { animation: pulse 1.8s ease-in-out infinite; }
+  @keyframes pulse { 50% { opacity: 0.35; } }
+  .name {
+    font-size: 13px; color: var(--muted);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+
+  .main { display: flex; align-items: flex-end; justify-content: space-between; margin-top: 10px; }
+  .percent { font-size: 46px; font-weight: 700; line-height: 1; letter-spacing: -0.02em; }
+  .percent small { font-size: 22px; font-weight: 600; color: var(--muted); margin-left: 2px; }
+  .time { text-align: right; line-height: 1.35; }
+  .time .remaining { font-size: 17px; font-weight: 600; }
+  .time .eta { font-size: 13px; color: var(--muted); }
+
+  .bar { height: 8px; margin-top: 12px; border-radius: 999px; background: var(--track); overflow: hidden; }
+  .bar > div {
+    height: 100%; width: 0;
+    border-radius: inherit;
+    background: var(--fill);
+    box-shadow: 0 0 12px var(--fill);
+    transition: width 1s ease, background 0.4s ease;
+  }
+
+  .stats { display: flex; gap: 18px; margin-top: 12px; font-size: 13px; color: var(--muted); }
+  .stats b { color: var(--text); font-weight: 600; }
+
+  .ams { display: flex; align-items: center; gap: 8px; margin-top: 12px; }
+  .ams:empty { display: none; }
+  .slot {
+    width: 16px; height: 16px; border-radius: 5px;
+    background: var(--c, transparent);
+    box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.22);
+    opacity: 0.55;
+    transition: all 0.3s ease;
+  }
+  .slot.empty { background: repeating-linear-gradient(45deg, transparent 0 3px, rgba(255,255,255,.12) 3px 5px); }
+  .slot.active { width: 20px; height: 20px; opacity: 1; box-shadow: 0 0 0 2px var(--text); }
+  .ams .label { margin-left: 4px; font-size: 13px; color: var(--muted); }
+  .ams .label b { color: var(--text); font-weight: 600; }
+</style>
+</head>
+<body>
+<div class="card offline" id="card">
+  <div class="head">
+    <span class="pill" id="pill"><span class="dot"></span><span id="status">Connecting…</span></span>
+    <span class="name" id="name"></span>
+  </div>
+  <div class="main">
+    <div class="percent"><span id="percent">–</span><small>%</small></div>
+    <div class="time">
+      <div class="remaining" id="remaining"></div>
+      <div class="eta" id="eta"></div>
+    </div>
+  </div>
+  <div class="bar"><div id="fill"></div></div>
+  <div class="stats">
+    <span>Layer <b id="layer">–</b></span>
+    <span>Nozzle <b id="nozzle">–</b></span>
+    <span>Bed <b id="bed">–</b></span>
+  </div>
+  <div class="ams" id="ams"></div>
+</div>
+
+<script>
+  const params = new URLSearchParams(location.search);
+  const HIDE_IDLE = params.get("hideIdle") === "1";
+  if (params.get("scale")) document.documentElement.style.setProperty("--scale", params.get("scale"));
+
+  const STATES = {
+    RUNNING: ["Printing", "#4ade80", true],
+    PREPARE: ["Preparing", "#60a5fa", true],
+    SLICING: ["Preparing", "#60a5fa", true],
+    PAUSE:   ["Paused", "#fbbf24", false],
+    FINISH:  ["Finished", "#a78bfa", false],
+    FAILED:  ["Failed", "#f87171", false],
+    IDLE:    ["Idle", "#9aa3ae", false],
+  };
+  const ACTIVE = new Set(["RUNNING", "PREPARE", "SLICING", "PAUSE"]);
+
+  const $ = (id) => document.getElementById(id);
+
+  function fmtDuration(min) {
+    if (min == null || min < 0) return "";
+    if (min < 60) return `${min} min`;
+    const h = Math.floor(min / 60), m = min % 60;
+    return `${h}h ${String(m).padStart(2, "0")}m`;
+  }
+
+  function fmtEta(min) {
+    if (min == null || min <= 0) return "";
+    const d = new Date(Date.now() + min * 60000);
+    const hhmm = d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+    const tomorrow = d.getDate() !== new Date().getDate();
+    return `ends ~${hhmm}${tomorrow ? " (tomorrow)" : ""}`;
+  }
+
+  function fmtTemp(cur, target) {
+    if (cur == null) return "–";
+    const c = Math.round(cur);
+    return target > 0 && Math.abs(target - cur) > 2 ? `${c}/${Math.round(target)}°` : `${c}°`;
+  }
+
+  // Avoids an invisible bar with a very dark filament.
+  function visibleColor(hex) {
+    if (!hex) return null;
+    const n = parseInt(hex.slice(1), 16);
+    const [r, g, b] = [n >> 16, (n >> 8) & 255, n & 255].map((v) => v / 255);
+    const lum = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+    return lum < 0.12 ? "#8b95a1" : hex;
+  }
+
+  function renderAms(s) {
+    const ams = $("ams");
+    ams.replaceChildren();
+    const activeIdx = s.active_tray?.index;
+    for (const t of s.trays || []) {
+      const el = document.createElement("span");
+      el.className = "slot" + (t.color ? "" : " empty") + (t.index === activeIdx ? " active" : "");
+      if (t.color) el.style.setProperty("--c", t.color);
+      ams.append(el);
+    }
+    if (s.active_tray?.name) {
+      const label = document.createElement("span");
+      label.className = "label";
+      label.innerHTML = "<b></b>";
+      label.firstChild.textContent = s.active_tray.name;
+      ams.append(label);
+    }
+  }
+
+  function render(s) {
+    const card = $("card");
+    const [label, color, live] = s.connected
+      ? STATES[s.state] || [s.state || "…", "#9aa3ae", false]
+      : ["Offline", "#6b7280", false];
+
+    card.classList.toggle("offline", !s.connected);
+    card.classList.toggle("hidden", HIDE_IDLE && (!s.connected || !ACTIVE.has(s.state)));
+
+    $("pill").style.setProperty("--dot", color);
+    $("pill").classList.toggle("live", live);
+    $("status").textContent = label;
+    $("name").textContent = s.name || "";
+
+    const pct = s.percent ?? 0;
+    $("percent").textContent = s.percent ?? "–";
+    $("fill").style.width = `${Math.max(0, Math.min(100, pct))}%`;
+
+    const running = ACTIVE.has(s.state);
+    $("remaining").textContent = running && s.remaining_min > 0 ? `${fmtDuration(s.remaining_min)} left` : "";
+    $("eta").textContent = s.state === "RUNNING" ? fmtEta(s.remaining_min) : "";
+
+    $("layer").textContent = s.total_layers ? `${s.layer ?? 0}/${s.total_layers}` : "–";
+    $("nozzle").textContent = fmtTemp(s.nozzle, s.nozzle_target);
+    $("bed").textContent = fmtTemp(s.bed, s.bed_target);
+
+    const fill = visibleColor(s.active_tray?.color) || color;
+    document.documentElement.style.setProperty("--fill", fill);
+
+    renderAms(s);
+  }
+
+  let last = { connected: false };
+  const es = new EventSource("/events");
+  es.onmessage = (e) => { last = JSON.parse(e.data); render(last); };
+  es.onerror = () => render({ ...last, connected: false });
+  // The end time drifts as time passes: recompute it every minute.
+  setInterval(() => render(last), 60000);
+</script>
+</body>
+</html>
