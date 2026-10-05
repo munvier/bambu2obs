@@ -2,6 +2,7 @@
 
 import json
 import logging
+import os
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -94,7 +95,11 @@ def make_handler(hub: Hub) -> type[BaseHTTPRequestHandler]:
     return Handler
 
 
+class _Server(ThreadingHTTPServer):
+    daemon_threads = True
+    # On Windows, SO_REUSEADDR lets a second instance silently bind the same port.
+    allow_reuse_address = os.name != "nt"
+
+
 def make_server(hub: Hub, host: str, port: int) -> ThreadingHTTPServer:
-    server = ThreadingHTTPServer((host, port), make_handler(hub))
-    server.daemon_threads = True
-    return server
+    return _Server((host, port), make_handler(hub))

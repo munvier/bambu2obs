@@ -25,6 +25,29 @@ python -m bambu2obs        # starts the MQTT client + the overlay server
 python -m bambu2obs -v     # + dumps the raw MQTT messages
 ```
 
+## Standalone executable (Windows)
+
+No Python needed:
+
+1. Download the latest `bambu2obs-vX.Y.Z-windows-x64.zip` from the
+   [Releases](https://github.com/munvier/bambu2obs/releases) page and unzip it.
+2. Copy `.env.example` to `.env` (same folder as `bambu2obs.exe`) and fill in the values.
+3. Double-click `bambu2obs.exe` and keep the console window open.
+
+The executable is not code-signed, so Windows SmartScreen may warn on first launch
+("More info" > "Run anyway"). You can check the download against the published
+`.sha256` file with `Get-FileHash bambu2obs-*.zip`.
+
+To build it yourself:
+
+```bash
+pip install pyinstaller
+pyinstaller --onefile --name bambu2obs --add-data "bambu2obs/web;bambu2obs/web" run.py
+```
+
+The result is `dist/bambu2obs.exe`. Pushing a `v*` tag builds and publishes it
+automatically (see `.github/workflows/release.yml`).
+
 ## In OBS
 
 Add a **Browser Source**:
@@ -56,3 +79,7 @@ Other routes: `/state` (JSON of the summarized state), `/events` (SSE stream).
 
 Reports often contain only the fields that changed: the client merges them
 into `BambuClient.state`.
+
+## License
+
+[MIT](LICENSE)

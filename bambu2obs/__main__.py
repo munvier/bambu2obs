@@ -3,6 +3,7 @@
 import logging
 import os
 import sys
+from pathlib import Path
 
 from dotenv import load_dotenv
 
@@ -13,8 +14,16 @@ from .summary import summarize
 log = logging.getLogger("bambu2obs")
 
 
+def _load_env() -> None:
+    # As a standalone executable, read the .env sitting next to the .exe.
+    if getattr(sys, "frozen", False):
+        load_dotenv(Path(sys.executable).parent / ".env")
+    else:
+        load_dotenv()
+
+
 def main() -> int:
-    load_dotenv()
+    _load_env()
     verbose = "-v" in sys.argv
     logging.basicConfig(
         level=logging.DEBUG if verbose else logging.INFO,
@@ -36,7 +45,11 @@ def main() -> int:
         host, serial, access_code,
         on_update=lambda state, connected: hub.publish(summarize(state, connected)),
     )
-    server = make_server(hub, http_host, http_port)
+    try:
+        server = make_server(hub, http_host, http_port)
+    except OSError as e:
+        print(f"Cannot listen on {http_host}:{http_port} ({e}). Is bambu2obs already running?")
+        return 1
 
     client.start()
     log.info("Overlay: http://localhost:%d  (OBS browser source)", http_port)

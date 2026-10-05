@@ -1,0 +1,44 @@
+name: Release
+
+# Builds bambu2obs.exe and attaches it to a GitHub Release when a version tag is pushed:
+#   git tag v0.1.0 && git push origin v0.1.0
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt pyinstaller
+
+      - name: Build executable
+        run: pyinstaller --onefile --name bambu2obs --add-data "bambu2obs/web;bambu2obs/web" run.py
+
+      - name: Package
+        shell: pwsh
+        run: |
+          $name = "bambu2obs-${{ github.ref_name }}-windows-x64"
+          New-Item -ItemType Directory $name | Out-Null
+          Copy-Item dist/bambu2obs.exe, .env.example, README.md $name
+          Compress-Archive -Path $name -DestinationPath "$name.zip"
+          (Get-FileHash "$name.zip" -Algorithm SHA256).Hash.ToLower() + "  $name.zip" |
+            Out-File -Encoding ascii "$name.zip.sha256"
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            bambu2obs-*.zip
+            bambu2obs-*.zip.sha256
+          generate_release_notes: true
