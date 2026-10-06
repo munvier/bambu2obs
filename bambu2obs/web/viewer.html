@@ -1,0 +1,214 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Bambu 3D Viewer</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { width: 100%; height: 100%; background: transparent; overflow: hidden; }
+  canvas { display: block; width: 100%; height: 100%; transition: opacity 0.6s ease; }
+  canvas.hidden { opacity: 0; }
+  #hint {
+    position: absolute; inset: 0;
+    display: flex; align-items: center; justify-content: center;
+    padding: 16px; text-align: center;
+    font: 500 14px/1.5 "Segoe UI", system-ui, sans-serif;
+    color: #9aa3ae;
+  }
+  #hint:empty { display: none; }
+  #hint span {
+    padding: 10px 16px; border-radius: 12px;
+    background: rgba(14, 16, 20, 0.80);
+    overflow-wrap: anywhere;
+  }
+</style>
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/"
+  }
+}
+</script>
+</head>
+<body>
+<canvas id="view"></canvas>
+<div id="hint"></div>
+
+<script type="module">
+  import * as THREE from "three";
+  import { STLLoader } from "three/addons/loaders/STLLoader.js";
+
+  const params = new URLSearchParams(location.search);
+  const HIDE_IDLE = params.get("hideIdle") === "1";
+  const SPEED = parseFloat(params.get("speed") ?? "1");       // turns per ~20 s
+  const SHOW_FULL = params.get("progress") === "0";           // always show the whole model
+  const FORCED = params.has("fill") ? parseFloat(params.get("fill")) : null;  // preview a progress (0-1)
+  const ACTIVE = new Set(["RUNNING", "PREPARE", "SLICING", "PAUSE"]);
+  const DEFAULT_COLOR = "#4ade80";
+
+  // ?color=ff8800 (hex without "#") or a CSS colour name; overrides the filament colour.
+  function parseColor(value) {
+    if (!value) return null;
+    const v = value.trim().replace(/^#/, "");
+    if (/^([0-9a-f]{3}|[0-9a-f]{6})$/i.test(v)) return "#" + v;
+    return CSS.supports("color", v) ? v : null;
+  }
+  const CUSTOM_COLOR = parseColor(params.get("color"));
+  const MODEL_POLL_MS = 3000;
+
+  const canvas = document.getElementById("view");
+  const hint = document.getElementById("hint");
+  const setHint = (text) => {
+    hint.replaceChildren();
+    if (text) hint.appendChild(document.createElement("span")).textContent = text;
+  };
+
+  const renderer = new THREE.WebGLRenderer({ canvas, alpha: true, antialias: true });
+  renderer.setPixelRatio(window.devicePixelRatio);
+  renderer.localClippingEnabled = true;
+
+  const scene = new THREE.Scene();
+  const camera = new THREE.PerspectiveCamera(32, 1, 0.1, 100);
+  camera.position.set(0, 1.5, 4.1);
+  camera.lookAt(0, 0, 0);
+
+  scene.add(new THREE.HemisphereLight(0xffffff, 0x30343c, 1.6));
+  const key = new THREE.DirectionalLight(0xffffff, 2.2);
+  key.position.set(2.5, 4, 3);
+  scene.add(key);
+  const rim = new THREE.DirectionalLight(0xffffff, 0.8);
+  rim.position.set(-3, 1.5, -2.5);
+  scene.add(rim);
+
+  // Everything below the plane is "printed"; the rest is shown as a ghost.
+  const clip = new THREE.Plane(new THREE.Vector3(0, -1, 0), 0);
+  const solid = new THREE.MeshStandardMaterial({
+    color: CUSTOM_COLOR || DEFAULT_COLOR, roughness: 0.55, metalness: 0.05,
+    side: THREE.DoubleSide, clippingPlanes: [clip],
+  });
+  const clipGhost = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
+  const ghost = new THREE.MeshBasicMaterial({
+    color: 0xffffff, transparent: true, opacity: 0.14, depthWrite: false,
+    clippingPlanes: [clipGhost],
+  });
+
+  const pivot = new THREE.Group();
+  scene.add(pivot);
+  let bounds = null;              // { minY, maxY } of the displayed model
+  let state = { connected: false };
+  let loaded = { version: null, plate: null };
+
+  function resize() {
+    const w = window.innerWidth, h = window.innerHeight;
+    renderer.setSize(w, h, false);
+    camera.aspect = w / h;
+    camera.updateProjectionMatrix();
+  }
+  window.addEventListener("resize", resize);
+  resize();
+
+  function showGeometry(geometry) {
+    for (const child of [...pivot.children]) {
+      child.geometry.dispose();
+      pivot.remove(child);
+    }
+    // Model files are Z-up, three.js is Y-up.
+    geometry.rotateX(-Math.PI / 2);
+    geometry.computeBoundingBox();
+    const center = geometry.boundingBox.getCenter(new THREE.Vector3());
+    geometry.translate(-center.x, -center.y, -center.z);
+    geometry.computeBoundingSphere();
+    const scale = 1 / (geometry.boundingSphere.radius || 1);
+    geometry.scale(scale, scale, scale);
+    geometry.computeVertexNormals();
+    geometry.computeBoundingBox();
+    bounds = { minY: geometry.boundingBox.min.y, maxY: geometry.boundingBox.max.y };
+    pivot.add(new THREE.Mesh(geometry, ghost), new THREE.Mesh(geometry, solid));
+  }
+
+  async function loadModel(info, plate) {
+    const res = await fetch(`/model.bin?plate=${plate ?? ""}`);
+    if (!res.ok) throw new Error(res.statusText || `HTTP ${res.status}`);
+    const buffer = await res.arrayBuffer();
+    let geometry;
+    if (res.headers.get("X-Model-Format") === "stl") {
+      geometry = new STLLoader().parse(buffer);
+    } else {
+      geometry = new THREE.BufferGeometry();
+      geometry.setAttribute("position", new THREE.BufferAttribute(new Float32Array(buffer), 3));
+    }
+    showGeometry(geometry);
+  }
+
+  let busy = false;
+  async function checkModel() {
+    if (busy) return;
+    busy = true;
+    try {
+      const info = await (await fetch("/model.json")).json();
+      const plate = state.plate ?? null;
+      if (!info.name) {
+        loaded = { version: null, plate: null };
+        bounds = null;
+        pivot.clear();
+        setHint(`Drop a .3mf or .stl file into ${info.folder}`);
+      } else if (info.version !== loaded.version || plate !== loaded.plate) {
+        loaded = { version: info.version, plate };
+        try {
+          await loadModel(info, plate);
+          setHint("");
+        } catch (e) {
+          bounds = null;
+          pivot.clear();
+          setHint(`Cannot display ${info.name}: ${e.message}`);
+        }
+      }
+    } catch {
+      // Server unreachable: keep showing the current model.
+    } finally {
+      busy = false;
+    }
+  }
+
+  function progress() {
+    if (FORCED !== null) return Math.max(0, Math.min(1, FORCED));
+    if (SHOW_FULL || !state.connected) return 1;
+    if (state.state === "FINISH") return 1;
+    if (!ACTIVE.has(state.state)) return 1;
+    if (state.total_layers > 0) return Math.min(1, (state.layer ?? 0) / state.total_layers);
+    return Math.min(1, (state.percent ?? 0) / 100);
+  }
+
+  let shown = 1;                  // eased progress, so layer changes glide
+  let last = performance.now();
+  function frame(now) {
+    const dt = Math.min(0.1, (now - last) / 1000);
+    last = now;
+    pivot.rotation.y += dt * SPEED * (Math.PI * 2 / 20);
+    if (bounds) {
+      shown += (progress() - shown) * Math.min(1, dt * 3);
+      clip.constant = bounds.minY + (bounds.maxY - bounds.minY) * shown + 1e-4;
+      clipGhost.constant = -clip.constant;
+    }
+    renderer.render(scene, camera);
+    requestAnimationFrame(frame);
+  }
+  requestAnimationFrame(frame);
+
+  function applyState(s) {
+    state = s;
+    solid.color.set(CUSTOM_COLOR || s.active_tray?.color || DEFAULT_COLOR);
+    canvas.classList.toggle("hidden", HIDE_IDLE && (!s.connected || !ACTIVE.has(s.state)));
+    if ((s.plate ?? null) !== loaded.plate) checkModel();
+  }
+
+  const es = new EventSource("/events");
+  es.onmessage = (e) => applyState(JSON.parse(e.data));
+  es.onerror = () => applyState({ ...state, connected: false });
+
+  checkModel();
+  setInterval(checkModel, MODEL_POLL_MS);
+</script>
+</body>
+</html>

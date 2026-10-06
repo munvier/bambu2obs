@@ -58,6 +58,7 @@ def summarize(state: dict[str, Any], connected: bool) -> dict[str, Any]:
         "remaining_min": state.get("mc_remaining_time"),
         "layer": state.get("layer_num"),
         "total_layers": state.get("total_layer_num"),
+        "plate": state.get("plate_idx"),
         "nozzle": state.get("nozzle_temper"),
         "nozzle_target": state.get("nozzle_target_temper"),
         "bed": state.get("bed_temper"),

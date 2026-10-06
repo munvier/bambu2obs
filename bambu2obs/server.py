@@ -1,4 +1,4 @@
-"""Local HTTP server: serves the overlay and pushes state as Server-Sent Events."""
+"""Local HTTP servers: serve the overlay / 3D viewer pages and push state as Server-Sent Events."""
 
 import json
 import logging
@@ -7,6 +7,9 @@ import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
+from urllib.parse import parse_qs, urlsplit
+
+from .models import ModelStore
 
 log = logging.getLogger(__name__)
 
@@ -42,15 +45,22 @@ class Hub:
             return self._version, self._payload
 
 
-def make_handler(hub: Hub) -> type[BaseHTTPRequestHandler]:
+def make_handler(hub: Hub, models: ModelStore, index: str) -> type[BaseHTTPRequestHandler]:
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, format: str, *args: Any) -> None:
             log.debug("%s - %s", self.address_string(), format % args)
 
         def do_GET(self) -> None:
-            path = self.path.split("?", 1)[0]
-            if path in ("/", "/overlay.html"):
-                self._send_file(WEB_DIR / "overlay.html", "text/html; charset=utf-8")
+            url = urlsplit(self.path)
+            path = url.path
+            if path == "/":
+                path = "/" + index
+            if path in ("/overlay.html", "/viewer.html"):
+                self._send_file(WEB_DIR / path[1:], "text/html; charset=utf-8")
+            elif path == "/model.json":
+                self._send_bytes(json.dumps(models.info()).encode(), "application/json")
+            elif path == "/model.bin":
+                self._send_model(parse_qs(url.query).get("plate", [""])[0])
             elif path == "/state":
                 self._send_bytes(hub.current()[1].encode(), "application/json")
             elif path == "/events":
@@ -68,6 +78,25 @@ def make_handler(hub: Hub) -> type[BaseHTTPRequestHandler]:
 
         def _send_file(self, path: Path, content_type: str) -> None:
             self._send_bytes(path.read_bytes(), content_type)
+
+        def _send_model(self, plate: str) -> None:
+            try:
+                result = models.data(int(plate) if plate.isdigit() else None)
+            except Exception as e:
+                log.warning("Cannot load model: %s", e)
+                self.send_error(422, str(e))
+                return
+            if result is None:
+                self.send_error(404)
+                return
+            fmt, body = result
+            self.send_response(200)
+            self.send_header("Content-Type", "application/octet-stream")
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("X-Model-Format", fmt)
+            self.send_header("Cache-Control", "no-store")
+            self.end_headers()
+            self.wfile.write(body)
 
         def _stream_events(self) -> None:
             self.send_response(200)
@@ -101,5 +130,6 @@ class _Server(ThreadingHTTPServer):
     allow_reuse_address = os.name != "nt"
 
 
-def make_server(hub: Hub, host: str, port: int) -> ThreadingHTTPServer:
-    return _Server((host, port), make_handler(hub))
+def make_server(hub: Hub, models: ModelStore, host: str, port: int, index: str) -> ThreadingHTTPServer:
+    """index is the page served at "/": every other route is available on both servers."""
+    return _Server((host, port), make_handler(hub, models, index))

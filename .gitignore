@@ -16,6 +16,9 @@ dist/
 .mypy_cache/
 .ruff_cache/
 
+# --- Models dropped in for the 3D viewer ---
+models/
+
 # --- Logs / debug dumps (verbose mode prints raw MQTT payloads incl. serial) ---
 *.log
 *.dump

@@ -117,6 +117,15 @@
   const HIDE_IDLE = params.get("hideIdle") === "1";
   if (params.get("scale")) document.documentElement.style.setProperty("--scale", params.get("scale"));
 
+  // ?color=ff8800 (hex without "#") or a CSS colour name; overrides the filament colour.
+  function parseColor(value) {
+    if (!value) return null;
+    const v = value.trim().replace(/^#/, "");
+    if (/^([0-9a-f]{3}|[0-9a-f]{6})$/i.test(v)) return "#" + v;
+    return CSS.supports("color", v) ? v : null;
+  }
+  const CUSTOM_COLOR = parseColor(params.get("color"));
+
   const STATES = {
     RUNNING: ["Printing", "#4ade80", true],
     PREPARE: ["Preparing", "#60a5fa", true],
@@ -205,7 +214,7 @@
     $("nozzle").textContent = fmtTemp(s.nozzle, s.nozzle_target);
     $("bed").textContent = fmtTemp(s.bed, s.bed_target);
 
-    const fill = visibleColor(s.active_tray?.color) || color;
+    const fill = CUSTOM_COLOR || visibleColor(s.active_tray?.color) || color;
     document.documentElement.style.setProperty("--fill", fill);
 
     renderAms(s);
